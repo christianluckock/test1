@@ -1,347 +1,486 @@
-# Team & Player Management System Implementation Guide - FastAPI Version
+# Task Management API Tutorial
 
-## 1. Project Setup
+Welcome to the Task Management API tutorial! 👋 We'll build an API (Application Programming Interface) that helps manage tasks and task lists. Think of it like building the backend for a todo list application!
+
+## Project Name: task_management_api
+
+## What You'll Learn
+
+- Setting up a FastAPI project (a modern framework for building APIs)
+- Working with SQLite databases (a simple, file-based database)
+- Implementing CRUD operations (Create, Read, Update, Delete)
+- Managing relationships between database tables
+- RESTful API design principles
+- Testing API endpoints
+
+## Prerequisites
+
+- Basic Python knowledge
+- Understanding of HTTP methods (GET, POST, PUT, DELETE)
+- Python 3.8+ installed
+- A code editor (VS Code recommended)
+- Terminal/Command Prompt familiarity
+
+## Project Structure
+
+```
+task_management_api/
+│
+├── database/
+│   ├── __init__.py
+│   ├── db_setup.py      # Database initialization and test data
+│   └── task.db          # SQLite database file
+│
+├── routers/
+│   ├── __init__.py
+│   ├── task_lists.py    # Task List endpoints
+│   └── tasks.py         # Task endpoints
+│
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_task_lists.py
+│   └── test_tasks.py
+│
+├── main.py              # FastAPI application entry point
+└── requirements.txt     # Project dependencies
+```
+
+## Getting Started
+
+1. First, create a new project directory and set up a virtual environment:
+
+```bash
+mkdir task_management_api
+cd task_management_api
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install required packages:
+
+```bash
+pip install fastapi uvicorn sqlite3 pytest pytest-asyncio httpx
+pip freeze > requirements.txt
+```
+
+## Database Setup
+
+Create `database/db_setup.py`:
+
+```python
+import sqlite3
+import random
+
+def init_db():
+    """
+    Initialize the database by creating necessary tables.
+    This function will:
+    1. Create a connection to the SQLite database
+    2. Create the task_list table if it doesn't exist
+    3. Create the task table if it doesn't exist
+    """
+    # Connect to SQLite database (creates file if it doesn't exist)
+    conn = sqlite3.connect('database/task.db')
+    cur = conn.cursor()
+    
+    # Create TaskList table
+    # - id: unique identifier for each task list
+    # - name: name of the task list
+    # - description: optional description of the task list
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS task_list (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing ID
+            name TEXT NOT NULL,                    -- Required name field
+            description TEXT                       -- Optional description
+        )
+    ''')
+    
+    # Create Task table with foreign key to TaskList
+    # - id: unique identifier for each task
+    # - name: name of the task
+    # - description: optional description
+    # - priority: number from 1-5
+    # - task_list_id: references the task list this task belongs to
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS task (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-incrementing ID
+            name TEXT NOT NULL,                    -- Required name field
+            description TEXT,                      -- Optional description
+            priority INTEGER CHECK(priority BETWEEN 1 AND 5),  -- Priority must be 1-5
+            task_list_id INTEGER,                 -- Reference to task_list table
+            FOREIGN KEY (task_list_id) REFERENCES task_list(id)
+                ON DELETE CASCADE                  -- If task list is deleted, delete its tasks
+        )
+    ''')
+    
+    conn.commit()  # Save changes to database
+    return conn
+
+def load_test_data():
+    """
+    Populate the database with sample data for testing.
+    Creates 5 task lists, each with 0-10 random tasks.
+    """
+    # Initialize database and get connection
+    conn = init_db()
+    cur = conn.cursor()
+    
+    # Sample task lists data
+    task_lists = [
+        ("Work Projects", "Professional tasks and deadlines"),
+        ("Home Chores", "Household maintenance tasks"),
+        ("Shopping List", "Items to purchase"),
+        ("Learning Goals", "Educational objectives"),
+        ("Fitness Goals", "Exercise and health tasks")
+    ]
+    
+    # Insert sample task lists into database
+    cur.executemany(
+        "INSERT INTO task_list (name, description) VALUES (?, ?)",
+        task_lists
+    )
+    
+    # Create sample tasks for each task list
+    for list_id in range(1, len(task_lists) + 1):
+        # Randomly decide how many tasks to create (0-10)
+        num_tasks = random.randint(0, 10)
+        
+        # Create list of task tuples (name, description, priority, list_id)
+        tasks = [
+            (f"Task {i} for list {list_id}", 
+             f"Description for task {i}", 
+             random.randint(1, 5),  # Random priority 1-5
+             list_id)
+            for i in range(1, num_tasks + 1)
+        ]
+        
+        # Insert tasks into database
+        cur.executemany(
+            """INSERT INTO task (name, description, priority, task_list_id)
+               VALUES (?, ?, ?, ?)""",
+            tasks
+        )
+    
+    conn.commit()  # Save all changes
+    conn.close()   # Close database connection
+
+# If this file is run directly (not imported), load test data
+if __name__ == "__main__":
+    load_test_data()
+```
+
+## Main Application
+
+Create `main.py`:
 
 ```python
 from fastapi import FastAPI, HTTPException
-from typing import Optional
+from database.db_setup import init_db, load_test_data
 import sqlite3
-from contextlib import contextmanager
+from typing import List, Optional
 
-app = FastAPI(title="Team Management API")
+# Create FastAPI application instance
+app = FastAPI(
+    title="Task Management API",
+    description="A simple API for managing tasks and task lists",
+    version="1.0.0"
+)
 
-@contextmanager
-def get_db_connection():
-    conn = sqlite3.connect('teams.db')
+def get_db():
+    """
+    Helper function to create a database connection.
+    Returns a connection object with row_factory set to sqlite3.Row
+    for easier dictionary access.
+    """
+    conn = sqlite3.connect('database/task.db')
+    # This allows us to access rows as dictionaries instead of tuples
     conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys = ON')
-    try:
-        yield conn
-    finally:
-        conn.close()
+    return conn
 
-def create_tables():
-    with get_db_connection() as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS teams (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                mascot TEXT NOT NULL,
-                latitude REAL NOT NULL,
-                longitude REAL NOT NULL
-            )
-        ''')
-        
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS players (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                number INTEGER NOT NULL,
-                position TEXT NOT NULL,
-                team_id INTEGER,
-                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE RESTRICT,
-                UNIQUE(team_id, number)
-            )
-        ''')
-        conn.commit()
-
+# This function runs when the API starts up
 @app.on_event("startup")
-async def startup_event():
-    create_tables()
+async def startup():
+    """
+    Initialize the database when the application starts.
+    This ensures our tables exist before we try to use them.
+    """
+    init_db()
 ```
 
-## 2. Team Endpoints
+## Creating the Routers
+
+Create `routers/task_lists.py`:
 
 ```python
-@app.get("/api/teams")
-async def get_teams():
-    with get_db_connection() as conn:
-        teams = conn.execute('SELECT * FROM teams').fetchall()
-        return [dict(team) for team in teams]
+from fastapi import APIRouter, HTTPException
+from typing import List, Optional
+import sqlite3
 
-@app.get("/api/teams/{team_id}")
-async def get_team(team_id: int):
-    with get_db_connection() as conn:
-        team = conn.execute('SELECT * FROM teams WHERE id = ?', 
-                          (team_id,)).fetchone()
-        if team is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-        return dict(team)
+router = APIRouter(prefix="/task-lists", tags=["Task Lists"])
 
-@app.post("/api/teams", status_code=201)
-async def create_team(team: dict):
-    required_fields = {'name', 'mascot', 'latitude', 'longitude'}
-    if not all(field in team for field in required_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing required fields"
-        )
+@router.get("/")
+async def get_all_task_lists():
+    """Get all task lists"""
+    conn = get_db()
+    cur = conn.cursor()
+    task_lists = cur.execute("SELECT * FROM task_list").fetchall()
+    conn.close()
+    return [dict(row) for row in task_lists]
 
-    with get_db_connection() as conn:
-        try:
-            cursor = conn.execute('''
-                INSERT INTO teams (name, mascot, latitude, longitude)
-                VALUES (?, ?, ?, ?)
-            ''', (team['name'], team['mascot'], 
-                 team['latitude'], team['longitude']))
-            conn.commit()
-            
-            new_team = conn.execute(
-                'SELECT * FROM teams WHERE id = ?', 
-                (cursor.lastrowid,)
-            ).fetchone()
-            return dict(new_team)
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=400,
-                detail="Team name must be unique"
-            )
+@router.post("/")
+async def create_task_list(name: str, description: Optional[str] = None):
+    """Create a new task list"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    cur.execute(
+        "INSERT INTO task_list (name, description) VALUES (?, ?)",
+        (name, description)
+    )
+    list_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {"id": list_id, "name": name, "description": description}
 
-@app.put("/api/teams/{team_id}")
-async def update_team(team_id: int, team: dict):
-    required_fields = {'name', 'mascot', 'latitude', 'longitude'}
-    if not all(field in team for field in required_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing required fields"
-        )
+@router.put("/{list_id}")
+async def update_task_list(list_id: int, name: Optional[str] = None, description: Optional[str] = None):
+    """Update a task list"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    if name is None and description is None:
+        raise HTTPException(status_code=400, detail="No update parameters provided")
+    
+    updates = []
+    values = []
+    if name is not None:
+        updates.append("name = ?")
+        values.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        values.append(description)
+    
+    values.append(list_id)
+    query = f"UPDATE task_list SET {', '.join(updates)} WHERE id = ?"
+    
+    cur.execute(query, values)
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Task list not found")
+    
+    conn.commit()
+    conn.close()
+    return {"message": "Task list updated successfully"}
 
-    with get_db_connection() as conn:
-        existing = conn.execute(
-            'SELECT * FROM teams WHERE id = ?', 
-            (team_id,)
-        ).fetchone()
-        
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-            
-        try:
-            conn.execute('''
-                UPDATE teams 
-                SET name = ?, mascot = ?, latitude = ?, longitude = ?
-                WHERE id = ?
-            ''', (team['name'], team['mascot'], 
-                 team['latitude'], team['longitude'], team_id))
-            conn.commit()
-            
-            updated = conn.execute(
-                'SELECT * FROM teams WHERE id = ?', 
-                (team_id,)
-            ).fetchone()
-            return dict(updated)
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=400,
-                detail="Team name must be unique"
-            )
-
-@app.delete("/api/teams/{team_id}", status_code=204)
-async def delete_team(team_id: int):
-    with get_db_connection() as conn:
-        team = conn.execute(
-            'SELECT * FROM teams WHERE id = ?', 
-            (team_id,)
-        ).fetchone()
-        
-        if team is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-            
-        players = conn.execute(
-            'SELECT COUNT(*) as count FROM players WHERE team_id = ?', 
-            (team_id,)
-        ).fetchone()
-        
-        if players['count'] > 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete team with existing players"
-            )
-        
-        conn.execute('DELETE FROM teams WHERE id = ?', (team_id,))
-        conn.commit()
+@router.delete("/{list_id}")
+async def delete_task_list(list_id: int):
+    """Delete a task list"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    cur.execute("DELETE FROM task_list WHERE id = ?", (list_id,))
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Task list not found")
+    
+    conn.commit()
+    conn.close()
+    return {"message": "Task list deleted successfully"}
 ```
 
-## 3. Player Endpoints
+Create `routers/tasks.py`:
 
 ```python
-@app.get("/api/players")
-async def get_players(team_id: Optional[int] = None):
-    with get_db_connection() as conn:
-        if team_id:
-            players = conn.execute(
-                'SELECT * FROM players WHERE team_id = ?', 
-                (team_id,)
-            ).fetchall()
-        else:
-            players = conn.execute('SELECT * FROM players').fetchall()
-        return [dict(player) for player in players]
+from fastapi import APIRouter, HTTPException
+from typing import List, Optional
+import sqlite3
 
-@app.get("/api/players/{player_id}")
-async def get_player(player_id: int):
-    with get_db_connection() as conn:
-        player = conn.execute(
-            'SELECT * FROM players WHERE id = ?', 
-            (player_id,)
-        ).fetchone()
-        if player is None:
-            raise HTTPException(status_code=404, detail="Player not found")
-        return dict(player)
+router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-@app.post("/api/players", status_code=201)
-async def create_player(player: dict):
-    required_fields = {'name', 'number', 'position', 'team_id'}
-    if not all(field in player for field in required_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing required fields"
-        )
+@router.get("/")
+async def get_all_tasks():
+    """Get all tasks"""
+    conn = get_db()
+    cur = conn.cursor()
+    tasks = cur.execute("SELECT * FROM task").fetchall()
+    conn.close()
+    return [dict(row) for row in tasks]
 
-    with get_db_connection() as conn:
-        # Verify team exists
-        team = conn.execute(
-            'SELECT id FROM teams WHERE id = ?', 
-            (player['team_id'],)
-        ).fetchone()
-        if team is None:
-            raise HTTPException(status_code=404, detail="Team not found")
-        
-        try:
-            cursor = conn.execute('''
-                INSERT INTO players (name, number, position, team_id)
-                VALUES (?, ?, ?, ?)
-            ''', (player['name'], player['number'], 
-                 player['position'], player['team_id']))
-            conn.commit()
-            
-            new_player = conn.execute(
-                'SELECT * FROM players WHERE id = ?', 
-                (cursor.lastrowid,)
-            ).fetchone()
-            return dict(new_player)
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=400,
-                detail="Player number already exists for this team"
-            )
+@router.get("/list/{list_id}")
+async def get_tasks_by_list(list_id: int):
+    """Get all tasks in a specific list"""
+    conn = get_db()
+    cur = conn.cursor()
+    tasks = cur.execute(
+        "SELECT * FROM task WHERE task_list_id = ?",
+        (list_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in tasks]
 
-@app.put("/api/players/{player_id}")
-async def update_player(player_id: int, player: dict):
-    required_fields = {'name', 'number', 'position', 'team_id'}
-    if not all(field in player for field in required_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing required fields"
-        )
+@router.post("/")
+async def create_task(name: str, task_list_id: int, description: Optional[str] = None, priority: int = 1):
+    """Create a new task"""
+    if not 1 <= priority <= 5:
+        raise HTTPException(status_code=400, detail="Priority must be between 1 and 5")
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Verify task list exists
+    cur.execute("SELECT id FROM task_list WHERE id = ?", (task_list_id,))
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail="Task list not found")
+    
+    cur.execute(
+        """INSERT INTO task (name, description, priority, task_list_id)
+           VALUES (?, ?, ?, ?)""",
+        (name, description, priority, task_list_id)
+    )
+    
+    task_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {
+        "id": task_id,
+        "name": name,
+        "description": description,
+        "priority": priority,
+        "task_list_id": task_list_id
+    }
 
-    with get_db_connection() as conn:
-        existing = conn.execute(
-            'SELECT * FROM players WHERE id = ?', 
-            (player_id,)
-        ).fetchone()
-        
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Player not found")
-            
-        # Verify team exists if team_id is changing
-        if player['team_id'] != existing['team_id']:
-            team = conn.execute(
-                'SELECT id FROM teams WHERE id = ?', 
-                (player['team_id'],)
-            ).fetchone()
-            if team is None:
-                raise HTTPException(status_code=404, detail="Team not found")
-        
-        try:
-            conn.execute('''
-                UPDATE players 
-                SET name = ?, number = ?, position = ?, team_id = ?
-                WHERE id = ?
-            ''', (player['name'], player['number'], 
-                 player['position'], player['team_id'], player_id))
-            conn.commit()
-            
-            updated = conn.execute(
-                'SELECT * FROM players WHERE id = ?', 
-                (player_id,)
-            ).fetchone()
-            return dict(updated)
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=400,
-                detail="Player number already exists for this team"
-            )
+@router.put("/{task_id}")
+async def update_task(
+    task_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    priority: Optional[int] = None,
+    task_list_id: Optional[int] = None
+):
+    """Update a task"""
+    if priority is not None and not 1 <= priority <= 5:
+        raise HTTPException(status_code=400, detail="Priority must be between 1 and 5")
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    updates = []
+    values = []
+    if name is not None:
+        updates.append("name = ?")
+        values.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        values.append(description)
+    if priority is not None:
+        updates.append("priority = ?")
+        values.append(priority)
+    if task_list_id is not None:
+        # Verify new task list exists
+        cur.execute("SELECT id FROM task_list WHERE id = ?", (task_list_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Task list not found")
+        updates.append("task_list_id = ?")
+        values.append(task_list_id)
+    
+    if not updates:
+        raise HTTPException(status_code=400, detail="No update parameters provided")
+    
+    values.append(task_id)
+    query = f"UPDATE task SET {', '.join(updates)} WHERE id = ?"
+    
+    cur.execute(query, values)
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    conn.commit()
+    conn.close()
+    return {"message": "Task updated successfully"}
 
-@app.delete("/api/players/{player_id}", status_code=204)
-async def delete_player(player_id: int):
-    with get_db_connection() as conn:
-        player = conn.execute(
-            'SELECT * FROM players WHERE id = ?', 
-            (player_id,)
-        ).fetchone()
-        
-        if player is None:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        conn.execute('DELETE FROM players WHERE id = ?', (player_id,))
-        conn.commit()
+@router.delete("/{task_id}")
+async def delete_task(task_id: int):
+    """Delete a task"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    cur.execute("DELETE FROM task WHERE id = ?", (task_id,))
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    conn.commit()
+    conn.close()
+    return {"message": "Task deleted successfully"}
 ```
 
-## 4. Running the Application
+## Testing
+
+Create `tests/conftest.py`:
 
 ```python
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+import pytest
+from fastapi.testclient import TestClient
+import sqlite3
+import os
+from main import app
+from database.db_setup import init_db
+
+@pytest.fixture
+def test_db():
+    """Create a test database"""
+    test_db_path = "database/test_task.db"
+    conn = sqlite3.connect(test_db_path)
+    conn.row_factory = sqlite3.Row
+    init_db()
+    yield conn
+    conn.close()
+    os.remove(test_db_path)
+
+@pytest.fixture
+def test_client(test_db):
+    """Create a FastAPI test client"""
+    return TestClient(app)
+
+@pytest.fixture
+def sample_task_list(test_client):
+    """Create a sample task list for testing"""
+    response = test_client.post(
+        "/task-lists/",
+        params={"name": "Test List", "description": "A test task list"}
+    )
+    return response.json()
+
+@pytest.fixture
+def sample_task(test_client, sample_task_list):
+    """Create a sample task for testing"""
+    response = test_client.post(
+        "/tasks/",
+        params={
+            "name": "Test Task",
+            "description": "A test task",
+            "priority": 3,
+            "task_list_id": sample_task_list["id"]
+        }
+    )
+    return response.json()
 ```
 
-## Example API Requests
+Create `tests/test_task_lists.py`:
 
-### Create a Team
-```bash
-curl -X POST "http://localhost:8000/api/teams" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "name": "Dragons",
-           "mascot": "Dragon",
-           "latitude": 40.7128,
-           "longitude": -74.0060
-         }'
-```
+```python
+def test_create_task_list(test_client):
+    """Test creating a new task list"""
+    response = test_client.post(
+        "/task-lists/",
+        params={"name": "New List", "description": "Test description"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "New List"
+    assert data["description"] == "Test description"
+    assert "id" in data
 
-### Create a Player
-```bash
-curl -X POST "http://localhost:8000/api/players" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "name": "John Doe",
-           "number": 23,
-           "position": "Forward",
-           "team_id": 1
-         }'
-```
-
-## Installation and Setup
-
-1. Install dependencies:
-```bash
-pip install fastapi uvicorn
-```
-
-2. Run the application:
-```bash
-uvicorn main:app --reload
-```
-
-3. Access the API documentation:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## Key Features:
-
-1. ✓ Simple dictionary-based request/response handling
-2. ✓ Full CRUD operations for teams and players
-3. ✓ SQLite database with foreign key constraints
-4. ✓ Input validation for required fields
-5. ✓ Error handling for common cases
-6. ✓ Automatic API documentation
-7. ✓ Query parameter support for filtering players by team
+def test_get_nonexistent_task_list(test_client):
+    """Test getting a task list that doesn't exist"""
+    response = test_client.get("/task-lists/999")
+    assert response.status
