@@ -48,13 +48,11 @@ task_management_api/
 
 ## Getting Started
 
-1. First, create a new project directory and set up a virtual environment:
+1. First, create a new project directory:
 
 ```bash
 mkdir task_management_api
 cd task_management_api
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
 2. Install required packages:
